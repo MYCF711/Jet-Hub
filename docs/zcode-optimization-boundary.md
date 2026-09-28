@@ -167,3 +167,92 @@ B 竞速 3 路: 9.3 / 8.9 / 14.8 / 17.2s  中位 14.8s
 - 实测报告全文（29 节）：`dsh-free-glm` 仓库的 `LATENCY-FINDINGS.md`
 - 实现代码：`dsh-free-glm` 仓库的 `src/adapter.ts` + `patches/zcodeBridgeServer.ts`
 - 产物：`releases/dsh-zcode-bridge-0.4.1.tgz`
+---
+
+## 七、附：一个会让 provider 实现「卡死」的坑（2026-09-28 实测）
+
+如果你在 Jet Hub 里实现 ZCode provider，**这一节能省你几天**。
+
+### 7.1 症状
+
+模型**反复调用同一个工具、永不收敛**：
+
+```
+tool_call  {"tool":"pwsh","arguments":{}}    ← 参数为空
+tool_call  {"tool":"pwsh","arguments":{}}
+tool_call  {"tool":"pwsh","arguments":{}}
+2 分 15 秒仍在打转
+```
+
+### 7.2 诊断（两步就能定位）
+
+**第一步：确认上游没问题。** 直连打模型端点，按 `index` 累加流式分片：
+
+```
+[index=0]
+  name = pwsh
+  args = {"command":"Get-Date","description":"..."}   ← 完整合法 JSON
+```
+
+⇒ 上游发的 `tool_calls` 是对的。
+
+**第二步：看历史回传格式。** 如果模型收到的历史长这样：
+
+```
+```json
+{"tool":"pwsh","arguments":{...}}
+```
+[tool-result pwsh] <结果>
+```
+
+**这就是根因。**
+
+### 7.3 为什么这会卡死
+
+模型看到的只是「一段提及 pwsh 的**文字**」—— 看不到
+「这是我的调用、这是它的结果」的**结构化配对**，于是无法判断
+「上次调用已完成」→ 只能再调一次。
+
+更糟：`arguments:{}` 这个示范会让模型模仿出**空参数**调用。
+
+### 7.4 修法
+
+工具往返历史必须用 **Anthropic 原生 block**：
+
+```
+assistant: { content: [..., {type:"tool_use", id, name, input}] }
+user:      { content: [{type:"tool_result", tool_use_id, content}] }
+```
+
+`tool_use_id` **严格配对**是模型判断闭环的唯一依据。
+
+**实测对比**：
+
+| | 修复前 | 修复后 |
+|---|---|---|
+| 同任务 | 6 次重复调用、58.9s 不收敛 | **1 次调用、16.3s、正确回答** |
+| 参数 | `{}` 空 | 完整合法 JSON |
+
+### 7.5 同源的两个边界条件（也会重开同一 bug）
+
+1. **配对游标跨消息错位** —— 若 `pendingToolIds` 声明在消息循环**外**且游标全局递增，
+   那么任一轮 tool-result 数 < tool-call 数（多工具并行时取消、部分失败、历史截断）
+   会让**后续所有配对整体错位**。
+   **修法**：配对表**按消息重置**，并优先用 `toolCallId` 精确配对。
+
+2. **承载格式用无转义的字面切分** —— 若历史里用 `split("\0MARK\0")` 这类无转义切分，
+   而 payload 是工具结果的真实文本，那么输出里出现该标记就会**伪造出结构边界**。
+   **修法**：用带长度前缀的承载（`mark<len>\n<payload>`），payload 内容就无关紧要了。
+
+### 7.6 另外 8 条值得自查的加固点
+
+| 缺陷 | 后果 |
+|---|---|
+| `releaseLock()` 而不 `cancel()` | 用户取消后上游连接不关，**白扣额度** |
+| 超时只 abort fetch、不 abort 读流 | 不传 signal 时可**无限挂起** |
+| 竞速的 controller 在 attempt 的 finally 里删 | 落败请求**漏杀**，持续占额度 |
+| `tool_choice` 只认 `"none"` | `required` / 指定函数**静默失效** |
+| 不传 `stop_sequences` | 调用方设的停止串**被丢弃** |
+| 流式 `finish_reason` 只看 `content_block_start` | 某些兼容实现下**误报 stop** → 工具不执行 |
+| 诊断写盘用 `appendFileSync` | 每次请求**阻塞事件循环** |
+| `readBody` 超限不清空且不报实际大小 | 长上下文触顶后**无法诊断** |
