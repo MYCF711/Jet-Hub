@@ -31,7 +31,7 @@
  * 而不是只信环境变量。
  */
 
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 
@@ -44,37 +44,109 @@ export const ZCODE_START_PLAN_PROVIDER = 'account:bigmodel-start-plan'
 /**
  * 候选数据目录（按优先级）。
  *
- * ⚠ **必须包含「环境变量」与「已知固定路径」两类**：
- * - 环境变量：标准安装方式（`ZCODE_DATA_BASE_DIR`）
- * - 固定路径：本机实测的部署位置；环境块过期时它是唯一的线索
+ * ## ★ 一个真实踩到的坑（决定了本函数的最终形态）
  *
- * 探测顺序不影响正确性（都会检查文件是否存在），
- * 但把更可能命中的放前面能少几次 stat。
+ * 第一版只查「环境变量 + 用户主目录」。**对着真桥跑时找不到它**，
+ * 尽管实例明明在运行：
+ *
+ * ```
+ * ZCODE_DATA_BASE_DIR = (空)     ← launcher 的环境块里没有它
+ * 桥实际在             D:\zcode-glm5.3f\_oss_data\.zcode\v2\bridge-port.json
+ * ```
+ *
+ * 这正是 `AGENTS.md` 记过的那类问题：
+ * **「靠『文件实际在哪』这个事实做候选探测，
+ * 比靠『进程记得什么』可靠」** —— 只信环境变量会全盘找不到，
+ * 而失败形态是「provider 静默没有模型」，用户完全不知道原因。
+ *
+ * ⇒ 所以除了环境变量，还必须**按盘符扫一遍**。
  */
 export function bridgeDiscoveryCandidates(): readonly string[] {
   const out: string[] = []
+  const push = (p: string): void => {
+    if (!out.includes(p)) out.push(p)
+  }
+
+  /** ① 环境变量（标准安装方式）；支持 `;` 分隔的多数据目录。 */
   const fromEnv = process.env.ZCODE_DATA_BASE_DIR
   if (typeof fromEnv === 'string' && fromEnv.trim().length > 0) {
-    out.push(join(fromEnv.trim(), BRIDGE_DISCOVERY_RELATIVE))
+    for (const dir of fromEnv.split(';')) {
+      const trimmed = dir.trim()
+      if (trimmed.length > 0) push(join(trimmed, BRIDGE_DISCOVERY_RELATIVE))
+    }
   }
+
   /**
-   * ⚠ 已知部署路径。
+   * ② 显式声明的已知数据目录（`;` 分隔）。
    *
-   * 这里的取值来自 `AGENTS.md` 记录的「数据目录」约定。
-   * 之所以要硬编码一份：实测踩过「环境变量读不到」的情况
-   * （launcher 的环境块过期），那时只能靠文件实际位置找。
+   * 给「环境块过期、但你知道装在哪」的场景用 —— 比扫描更快更确定。
    */
   const known = process.env.ZCODE_BRIDGE_KNOWN_DATA_DIRS
   if (typeof known === 'string' && known.trim().length > 0) {
     for (const dir of known.split(';')) {
       const trimmed = dir.trim()
-      if (trimmed.length > 0) out.push(join(trimmed, BRIDGE_DISCOVERY_RELATIVE))
+      if (trimmed.length > 0) push(join(trimmed, BRIDGE_DISCOVERY_RELATIVE))
     }
   }
-  // 兜底：用户主目录下的标准位置
-  out.push(join(homedir(), BRIDGE_DISCOVERY_RELATIVE))
-  out.push(join(homedir(), '.zcode', 'v2', 'bridge-port.json'))
+
+  /** ③ 用户主目录下的标准位置（默认安装）。 */
+  push(join(homedir(), BRIDGE_DISCOVERY_RELATIVE))
+  push(join(homedir(), '.zcode', 'v2', 'bridge-port.json'))
+
+  /**
+   * ④ **扫描常见根目录下的两级目录**（最后手段）。
+   *
+   * 为什么非要它：本机的部署方式把数据目录放在一个**自定义路径**
+   *（`<项目目录>\_oss_data`），那个路径既不在环境变量、也不在主目录下，
+   * 前三类候选**全部落空**。
+   *
+   * 扫描范围刻意收紧（只下两级、只找这个特定文件名），
+   * 且用 `existsSync` 粗筛 —— 它是兜底，慢一点可以接受，
+   * 但「找不到桥」不可接受。
+   */
+  for (const root of scanRoots()) {
+    push(join(root, '\\_oss_data', '.zcode', 'v2', 'bridge-port.json'))
+    push(join(root, '_oss_data', '.zcode', 'v2', 'bridge-port.json'))
+  }
+
   return out
+}
+
+/**
+ * 扫描根目录（只返回**已存在**的目录，避免大量无效候选）。
+ */
+function scanRoots(): readonly string[] {
+  const roots: string[] = []
+  if (process.platform === 'win32') {
+    for (const drive of ['C', 'D', 'E', 'F', 'G', 'H']) {
+      const base = `${drive}:\\`
+      if (!existsSync(base)) continue
+      try {
+        for (const entry of readdirSync(base, { withFileTypes: true })) {
+          if (!entry.isDirectory()) continue
+          // 跳过系统目录 —— 它们不可能放 ZCode 数据
+          if (/^\$|^Windows$|^Program Files|^ProgramData|^System Volume|^Recovery/i.test(entry.name)) {
+            continue
+          }
+          roots.push(join(base, entry.name))
+        }
+      } catch {
+        /* 无权限的盘符跳过 */
+      }
+    }
+  } else {
+    for (const base of ['/opt', '/srv', join(homedir(), 'projects')]) {
+      if (!existsSync(base)) continue
+      try {
+        for (const entry of readdirSync(base, { withFileTypes: true })) {
+          if (entry.isDirectory()) roots.push(join(base, entry.name))
+        }
+      } catch {
+        /* 忽略 */
+      }
+    }
+  }
+  return roots
 }
 
 /** 桥的发现信息。 */

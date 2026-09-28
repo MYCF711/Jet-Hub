@@ -1,0 +1,71 @@
+fix(zcode): 发现文件探测加上**扫描兜底** —— 只信环境变量会全盘找不到
+
+## 真实踩到的坑（对着真桥跑时才暴露）
+
+第一版只查「环境变量 + 用户主目录」。对着运行中的桥跑验证脚本：
+
+```
+✗ 找到桥的发现文件
+  ZCODE_DATA_BASE_DIR = (空)      ← launcher 的环境块里没有它
+  桥实际在             D:\zcode-glm5.3f\_oss_data\.zcode\v2\bridge-port.json
+```
+
+**前三类候选全部落空**，因为本机把数据目录放在一个自定义路径
+（`<项目目录>\_oss_data`），它既不在环境变量、也不在主目录下。
+
+这正是 `AGENTS.md` 记过的那类问题：
+> 靠「文件实际在哪」这个事实做候选探测，比靠「进程记得什么」可靠
+
+而失败形态很糟：**provider 静默没有模型**，用户完全不知道原因。
+
+## 修法：加第 ④ 类候选（扫描）
+
+按盘符扫顶层目录，检查 `<dir>\_oss_data\.zcode\v2\bridge-port.json`。
+
+扫描范围刻意收紧：
+- 只下**两级**（盘符 → 目录 → 固定相对路径）
+- 跳过系统目录（`Windows` / `Program Files` / `ProgramData` / `$*`）
+- 候选去重
+
+实测候选从 2 个变成 **130 个**，**精确命中 1 个**（就是真桥）。
+130 次 `existsSync` 在本机是毫秒级，完全可接受。
+
+## 加了一个端到端验证脚本
+
+`scripts/verify-zcode-against-bridge.mjs` —— 对着**真桥**跑：
+
+```
+✓ 发现文件探测（端口 53297、token 48 字符）
+✓ /health 探活
+✓ /v1/models 目录，且与兜底表有交集
+✓ chat/completions 协议形状（OpenAI SSE + [DONE]）
+```
+
+### 它当场抓出了上面的 bug
+
+这正是「单元测试全 mock + typecheck 通过」**不能替代**的东西 ——
+本 provider 的核心风险恰好在运行期（路径探测、响应形状），
+而这些只有对着真桥才暴露。
+
+### 空输出的诚实处理
+
+脚本区分两种「有 SSE 帧、无 content」：
+
+| 原因 | 特征 | 归谁 |
+|---|---|---|
+| 我的代码有问题 | `usage` 缺失/异常 | 本 PR |
+| 实例侧 mint 失败（captcha 降级） | `total_tokens: 0` + `finish_reason: stop` | 运行环境 |
+
+实测当前是后者（本机 captcha 已降级为人工滑块，见
+`INCIDENT-2026-09-29-captcha.md`）。脚本据此判「协议正确、环境受阻」，
+而不是笼统地报失败 —— 否则会把环境问题误记成代码缺陷。
+
+## 验证
+
+```
+typecheck          0 错误
+plugin.spec        通过
+jet-hub-rpc.spec   通过
+credits-capabilities.spec 通过
+合计                129/129
+```
