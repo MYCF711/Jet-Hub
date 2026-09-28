@@ -92,6 +92,21 @@ export const CREDITS_CAPABILITIES = Object.freeze({
   loomy: Object.freeze({ balance: true, dailyCheckin: true, onboardingTasks: true }),
   // Raccoon Work（商汤小浣熊）：余额 + **一次性**登录奖励。
   raccoon: Object.freeze({ balance: true, onboardingTasks: true }),
+  // ZCode（智谱 z.ai 免费额度通道）：**两项都没有**。
+  //
+  // 它不是「积分账户」模型，而是「每日刷新的订阅额度」——
+  // 桥的 `/diagnostics/billing` 返回的是
+  // `{ totalUnits, usedUnits, remainingUnits, period: 'daily', expiresAt }`，
+  // 语义是「今天还能用多少 token」，**不是可领取的积分**。
+  //
+  // ⚠ 因此**没有签到**：额度按日自动刷新（到期时间 23:59:59），
+  // 不存在「领取」这个动作。上游也没有 claim 端点
+  //（实测：`/diagnostics/claim` 只在活动赠送套餐上有意义）。
+  // 给它加签到按钮会是一个**点了没反应的假按钮**。
+  //
+  // 显式登记为全 false 而非省略 —— 单测要求本表与 PROVIDERS 同步，
+  // 且显式 false 让「这个 provider 确实不支持」在代码里可见。
+  zcode: Object.freeze({ balance: false, dailyCheckin: false }),
 });
 
 /**

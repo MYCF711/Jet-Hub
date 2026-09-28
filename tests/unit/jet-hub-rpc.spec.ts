@@ -647,6 +647,14 @@ describe('account.create 必须立即返回 loginUrl（两步式登录回归）'
       makeAuth('cline') as never,
       {} as never,
       {} as never,
+      // ⚠ 新增 provider 时必须在这里补一个占位实参。
+      //
+      // `registerJetHubRpc` 用的是**位置参数**，新增服务插在中间会让后面
+      // 所有实参**整体错位** —— 而 TypeScript 不会报错（各服务的类型
+      // 结构上兼容），失败会以「某个端点行为不对」的形式出现，极难定位。
+      //
+      // 本文件这里传的是 `zcode`（2026-09-28 新增，紧随 `raccoon`）。
+      {} as never,
     )
     if (handler === undefined) throw new Error('endpoint handler was not registered')
 
@@ -962,6 +970,14 @@ describe('model.list / model.setDisabled 端点', () => {
       ctx as never, pool,
       {} as never, {} as never, {} as never, {} as never, {} as never, {} as never,
       {} as never, {} as never, {} as never, {} as never, {} as never, {} as never,
+      {} as never, // 13: raccoon
+      // ⚠ 14: zcode —— 2026-09-28 新增，插在 raccoon 与 modelAdapters 之间。
+      //
+      // `registerJetHubRpc` 用**位置参数**，新增服务插在中间会让后面所有实参
+      // **整体错位**，而 TypeScript 不会报错（各服务类型结构上兼容）——
+      // 失效形式是「modelAdapters 变成 undefined」，表现为
+      // 「关闭的模型退化成裸 id」，与本测试要守的性质一模一样。
+      // 漏掉这一行时，正是这个测试挂了（真实踩到）。
       {} as never,
       options.modelAdapters as never,
     )

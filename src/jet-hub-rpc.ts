@@ -31,6 +31,10 @@ import { RACCOON } from './raccoon-product.js'
 import type { RaccoonAuth } from './raccoon-auth.js'
 import type { RaccoonCredential } from './raccoon.js'
 import type { StartedRaccoonLoginFlow } from './raccoon-login-page.js'
+import type { ZcodeAuth } from './zcode-auth.js'
+import { ZCODE } from './zcode-product.js'
+import type { ZcodeCredential } from './zcode.js'
+import { readBridgeDiscovery } from './zcode.js'
 import { LOOMY_TASK_POINTS, LOOMY_TASK_TITLES } from './loomy-onboarding.js'
 import { LOBSTERAI } from './lobsterai-product.js'
 import { QODER, QODER_CN, qoderProductById } from './qoder-product.js'
@@ -615,6 +619,7 @@ export function registerJetHubRpc(
   cline: ClineAuth,
   loomy: LoomyAuth,
   raccoon: RaccoonAuth,
+  zcode: ZcodeAuth,
   /**
    * provider → 适配器实例（可选）。
    *
@@ -627,7 +632,7 @@ export function registerJetHubRpc(
   ctx.inject(['connection'], (connectionCtx) => {
     registerJetHubEndpoints(
       connectionCtx as Context, pool, codearts, buddy, buddyIntl, workbuddy, workbuddyCn,
-      lobsterai, qoder, qoderCn, trae, traeIntl, cline, loomy, raccoon, modelAdapters,
+      lobsterai, qoder, qoderCn, trae, traeIntl, cline, loomy, raccoon, zcode, modelAdapters,
     )
   })
 }
@@ -689,6 +694,7 @@ function registerJetHubEndpoints(
   cline: ClineAuth,
   loomy: LoomyAuth,
   raccoon: RaccoonAuth,
+  zcode: ZcodeAuth,
   modelAdapters?: Readonly<Record<string, ModelCatalogSource>>,
 ): void {
   /**
@@ -1313,6 +1319,46 @@ function registerJetHubEndpoints(
               // 账号池仍是 12:02，相差 3.1 小时，但功能完全正常）。
               await raccoon.refreshAccountCredential(entry.credentialRef, pool, entry.id)
               break
+            case ZCODE.id: {
+              /**
+               * zcode **没有 refresh 端点** —— 凭据语义是「本机桥的访问信息」，
+               * 没有远端 token 可刷。
+               *
+               * 但这里不能什么都不做：**端口随实例重启变化**，
+               * 而账号卡片显示的是上次记录的端口。所以重读发现文件并回写，
+               * 让展示值与实际一致。
+               *
+               * ⚠ 回写失败**不应报错** —— 真正的请求走文件、不依赖这份回写，
+               * 为了「展示值没同步上」让用户看到一条失败提示是得不偿失的。
+               */
+              const discovery = readBridgeDiscovery()
+              if (discovery === undefined) {
+                throw new Error(
+                  'ZCode 桥不可用：请先启动 ZCode 实例（它会自行写出 bridge-port.json）',
+                )
+              }
+              const resolved = await pool.resolveCredentialForAccount(entry.id)
+              /**
+               * ⚠ `resolveCredentialForAccount` 返回的是**已解析的对象**
+               *（它内部做了 `resolveCredentialByRef`），不是 `{ value }` 包装。
+               * 第一版按 `resolved.value` 取，类型直接报
+               *「Property 'value' does not exist」。
+               *
+               * 它声明的类型是 `CodeArtsCredential | BuddyCredential`（历史遗留），
+               * 与 `ZcodeCredential` 无重叠，故经 `unknown` 转换 ——
+               * 运行时安全性由 provider 过滤保证（entry 一定属于 zcode）。
+               */
+              const current = resolved === undefined
+                ? undefined
+                : resolved as unknown as ZcodeCredential
+              const next: ZcodeCredential = {
+                bridge_token: discovery.token,
+                bridge_port: discovery.port,
+                account_label: current?.account_label ?? `127.0.0.1:${discovery.port}`,
+              }
+              await ctx.credentials.set(credentialRef(entry.credentialRef), JSON.stringify(next))
+              break
+            }
             default:
               throw new Error(`Unknown provider: ${entry.provider}`)
           }

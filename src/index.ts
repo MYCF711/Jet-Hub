@@ -39,6 +39,10 @@ import type { TraeCredential } from './trae.js'
 import type { ClineCredential } from './cline.js'
 import type { LoomyCredential } from './loomy.js'
 import type { RaccoonCredential } from './raccoon.js'
+import { ZcodeAuth } from './zcode-auth.js'
+import { registerZcodeLlm } from './zcode-adapter.js'
+import { ZCODE } from './zcode-product.js'
+import { readBridgeDiscovery, type ZcodeCredential } from './zcode.js'
 
 export const name = 'codearts-auth'
 // `connection` 刻意不列入静态 inject：它只由 Web bundle（dsh-client-connection）
@@ -156,7 +160,7 @@ export function apply(ctx: Context): void {
     'llm-buddy', 'llm-buddy-intl', 'llm-workbuddy-cn', 'llm-workbuddy',
     'llm-codearts', 'llm-lobsterai',
     'llm-qoder', 'llm-qoder-cn', 'llm-trae', 'llm-trae-intl',
-    'llm-cline', 'llm-loomy', 'llm-raccoon',
+    'llm-cline', 'llm-loomy', 'llm-raccoon', 'llm-zcode',
     `llm-${ANTIGRAVITY_PROVIDER}`,
   )
   const service = new CodeArtsAuth(ctx)
@@ -760,6 +764,73 @@ export function apply(ctx: Context): void {
     ctx.logger.warn(`[jet-hub] 修正 Raccoon 账号显示名失败：${String(error)}`)
   })
 
+  // ===== ZCode（智谱 z.ai 免费额度通道）=====
+  //
+  // 第十个产品线，但与前面九个**形态完全不同**：
+  // 它不是「读凭据 → 直发远端」，而是把请求发给**本机 ZCode 实例的 HTTP 桥**，
+  // 由那个实例代发上游。captcha 与 3012 风控因此由实例自己处理。
+  //
+  // ⚠ **不可续期**：凭据语义是「本机桥是否活着」，没有远端 token 可刷。
+  // 端口与 token 随实例重启变化，由**每次请求重读发现文件**处理
+  //（见 zcode-adapter.ts 里的说明）—— 那不是「续期」。
+  //
+  // 服务名注册为 ctx.zcodeAuth。不注册斜杠命令：入口在 Jet Hub 的 ZCode 面板。
+  const zcode = new ZcodeAuth(ctx)
+  const zcodeAdapter = registerZcodeLlm(ctx, {
+    credentialRef: credentialRef(ZCODE.defaultCredentialRef),
+    resolveCredential: async () => {
+      // 只从 zcode 自己的账号池取账号，回退到自己的单凭据 ref，
+      // 保证不会串用其它 provider 的凭据。
+      // provider 实参用 ZCODE.id 而非字面量：写死字面量在改名/多产品场景下
+      // 会静默查不到账号（本插件在 workbuddy 上踩过同类坑）。
+      const available = await pool.getAvailableAccount(ZCODE.id, '')
+      // `getAvailableAccount` 的凭据类型是 `CodeArtsCredential | BuddyCredential`
+      // 联合（历史遗留），与 `ZcodeCredential` 无充分重叠，故经 `unknown` 转换。
+      // 运行时安全性由 provider 过滤保证：查询用 `ZCODE.id`，取到的必是 zcode 凭据。
+      if (available) return available.credential as unknown as ZcodeCredential
+      const resolved = await ctx.credentials.resolve(credentialRef(ZCODE.defaultCredentialRef))
+      if (!resolved) return undefined
+      try {
+        return JSON.parse(resolved.value) as ZcodeCredential
+      } catch {
+        return undefined
+      }
+    },
+    refresh: async () => {
+      // ⚠ ZCode **没有** refresh 端点（与 Loomy 恒 false 同类，但原因不同）：
+      // 凭据是「本机桥的访问信息」，它的变化由**重读发现文件**自然处理。
+      //
+      // 这里做的是「把发现文件里最新的端口写回账号条目的昵称」——
+      // 让账号卡片的展示值不会长期偏离实际。
+      // **真正的请求一律以文件为准**，不依赖这次回写是否成功。
+      const discovery = readBridgeDiscovery()
+      if (discovery === undefined) return
+      const available = await pool.getAvailableAccount(ZCODE.id, '')
+      // ⚠ `getAvailableAccount` 返回的可能是 `null`（本仓库该 API 的约定），
+      // 只判 `undefined` 会漏掉它 —— 用显式判空覆盖两者。
+      if (available === null || available === undefined) return
+      try {
+        const current = available.credential as unknown as ZcodeCredential
+        const next: ZcodeCredential = {
+          bridge_token: discovery.token,
+          bridge_port: discovery.port,
+          account_label: current.account_label ?? `127.0.0.1:${discovery.port}`,
+        }
+        await ctx.credentials.set(
+          credentialRef(available.entry.credentialRef),
+          JSON.stringify(next),
+        )
+      } catch {
+        // 回写失败不影响请求（请求走文件）。静默即可。
+      }
+    },
+    // 远端模型目录：委托给 ZcodeAuth.fetchModels（它负责冒号头与 `visible` 过滤）。
+    // 失败时返回空数组，由适配器回退兜底表。
+    fetchRemoteModels: () => zcode.fetchModels(),
+    accountPool: pool,
+    product: ZCODE,
+  })
+
   // ===== 多账号静默续期调度 =====
   const REFRESH_INTERVAL_MS = 30 * 60 * 1000 // 每 30 分钟检查一次
 
@@ -805,6 +876,12 @@ export function apply(ctx: Context): void {
       // raccoon **可续期**：只按 refreshable 过滤，且只续期已过期的账号。
       await raccoon.refreshAll(pool)
     } catch { /* 静默 */ }
+    try {
+      // zcode **不可续期**（没有 refresh 端点）—— 但这个方法仍做实事：
+      // 把发现文件里的最新端口同步到账号昵称（见 zcode-auth.ts 的说明）。
+      // 它幂等，端口没变时不写。
+      await zcode.refreshAll(pool)
+    } catch { /* 静默 */ }
     // ⚠️ Antigravity **刻意不在此列**：它不接账号池、不做限流轮换，续期由 IDE
     // 自己负责（见下方注册处注释）。把它并进 refreshAll 会引入 Google 侧敏感的
     // 多客户端轮换行为。
@@ -836,6 +913,7 @@ export function apply(ctx: Context): void {
         cline.stop()
         loomy.stop()
         raccoon.stop()
+        zcode.stop()
       }, 'jet-hub: multi-account refresh scheduler')
     }
   })
@@ -855,6 +933,7 @@ export function apply(ctx: Context): void {
     cline.stop()
     loomy.stop()
     raccoon.stop()
+    zcode.stop()
   }, 'codearts-auth.scheduler (legacy)')
 
   // ===== 可配置 provider 目录项：注册即固定，不做动态增删 =====
@@ -921,6 +1000,7 @@ export function apply(ctx: Context): void {
     cline: clineAdapter,
     loomy: loomyAdapter,
     raccoon: raccoonAdapter,
+    zcode: zcodeAdapter,
   }
   // Antigravity 的适配器实例只在它已注册时登记。`getRegisteredAntigravityAdapter()`
   // 类型上是可选的（注册函数返回的是注销函数而非实例），故此处按需取值，
@@ -932,6 +1012,6 @@ export function apply(ctx: Context): void {
 
   registerJetHubRpc(
     ctx, pool, service, buddy, buddyIntl, workbuddy, workbuddyCn,
-    lobsterai, qoder, qoderCn, trae, traeIntl, cline, loomy, raccoon, modelAdapters)
+    lobsterai, qoder, qoderCn, trae, traeIntl, cline, loomy, raccoon, zcode, modelAdapters)
   ctx.provide('accountPool', pool)
 }

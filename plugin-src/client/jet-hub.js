@@ -131,6 +131,16 @@ const CLINE_ICON = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAADAAAAAwCAYAAA
 const LOOMY_ICON = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Crect width="24" height="24" rx="6" fill="%23007aff"/%3E%3Ctext x="12" y="17.5" font-size="15" font-family="sans-serif" font-weight="700" fill="white" text-anchor="middle"%3EL%3C/text%3E%3C/svg%3E';
 
 /**
+ * ZCode（智谱）面板图标：内联 SVG。
+ *
+ * 用与 `LOOMY_ICON` 同款的「圆角方块 + 字母」形态 —— 比内联 base64 PNG
+ * 小两个数量级（约 300 字节 vs 数十 KB），且不依赖任何外部资源。
+ *
+ * 配色取智谱品牌蓝（z.ai 的 `#2b6cff` 系）；字母用 `Z`。
+ */
+const ZCODE_ICON = 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"%3E%3Crect width="24" height="24" rx="6" fill="%232b6cff"/%3E%3Ctext x="12" y="17.5" font-size="15" font-family="sans-serif" font-weight="700" fill="white" text-anchor="middle"%3EZ%3C/text%3E%3C/svg%3E';
+
+/**
  * Raccoon Work（商汤小浣熊）面板图标：内联 base64 PNG。
  *
  * ⚠️ **从官方安装目录提取，不凭印象重绘**（与 Cline 那次的教训一致：
@@ -167,6 +177,10 @@ const PROVIDERS = Object.freeze([
   // ⚠️ 用『Raccoon (商汤)』而非『Raccoon Work (商汤)』—— 后者在 provider 列表里
   // **触发换行**（用户报障）。与 `RaccoonProduct.displayName` 保持一致。
   { id: 'raccoon', label: 'Raccoon (商汤)', icon: RACCOON_ICON, logoClass: 'raccoon' },
+  // ZCode（智谱 z.ai 免费额度通道）。
+  // ⚠ 用『ZCode (智谱)』而非『ZCode Bridge (GLM free)』—— 后者在 provider Tab
+  // 里**触发换行**（与 Raccoon 同样的用户报障）。与 `ZcodeProduct.displayName` 一致。
+  { id: 'zcode', label: 'ZCode (智谱)', icon: ZCODE_ICON, logoClass: 'zcode' },
   { id: 'antigravity', label: 'Antigravity (Google)', icon: ANTIGRAVITY_ICON, logoClass: 'antigravity', reuse: true },
 ]);
 
