@@ -21,7 +21,12 @@
 
 import type { Context } from '@deepseek-ai/cordis'
 import type { CredentialRef } from '@deepseek-ai/dsh-credentials'
-import { LlmAdapter, LlmError } from '@deepseek-ai/dsh-llm'
+import {
+  CONTEXT_WINDOW_EXCEEDED_CODE,
+  isContextWindowExceededError,
+  LlmAdapter,
+  LlmError,
+} from '@deepseek-ai/dsh-llm'
 import type {
   GenerateOptions,
   LlmModelInfo,
@@ -342,7 +347,19 @@ export class RaccoonAdapter extends LlmAdapter {
 
     if (!response.ok) {
       const errorText = await response.text().catch(() => '')
-      throw new LlmError(`raccoon: ${errorDetail(errorText)}`, httpErrorCode(response.status), { status: response.status })
+      // 400 需要看**响应体**才能区分「上下文超限」与「普通请求错误」：前者必须归为
+      // CONTEXT_WINDOW_EXCEEDED，才能触发 DSH 的 context-overflow 自动压缩恢复
+      // （dsh-compaction-basic 监听 `agent/request-error`，只对
+      // `failure.code === CONTEXT_WINDOW_EXCEEDED` 的失败压缩上下文并重试）；
+      // 若一律标成 INVALID_REQUEST，长会话一旦越过窗口就会直接把裸错误抛给用户。
+      //
+      // 与 buddy-adapter 的 `httpErrorCode(status, body)` 同款处理 —— 该适配器
+      // 本来就带这条分支；raccoon 之前只按状态码映射，缺了它。
+      const code =
+        response.status === 400 && isContextWindowExceededError(errorText)
+          ? CONTEXT_WINDOW_EXCEEDED_CODE
+          : httpErrorCode(response.status)
+      throw new LlmError(`raccoon: ${errorDetail(errorText)}`, code, { status: response.status })
     }
 
     // ⚠️ 业务失败也可能以 HTTP 200 + SSE 内嵌错误帧返回，由 consumeOpenAiSse 处理。
