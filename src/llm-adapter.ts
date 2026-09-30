@@ -739,15 +739,25 @@ class DsmlContentExtractor {
 
 /** 兼容 OpenAI 格式的 CodeArts 模型适配器，使用华为请求签名。 */
 export class CodeArtsAdapter extends LlmAdapter {
-  private readonly fetchImpl: typeof fetch
   private readonly chatId: string
   private readonly sessionId: string
 
   constructor(private readonly options: CodeArtsAdapterOptions) {
     super()
-    this.fetchImpl = options.fetchImpl ?? fetch
     this.chatId = options.chatId ?? crypto.randomUUID().replace(/-/g, '')
     this.sessionId = options.sessionId ?? crypto.randomUUID().replace(/-/g, '')
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   /**

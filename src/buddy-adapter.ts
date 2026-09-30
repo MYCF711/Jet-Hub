@@ -547,7 +547,6 @@ function collectImages(content: readonly unknown[], refs: Map<string, unknown>):
 export class BuddyAdapter extends LlmAdapter {
   /** 本适配器所属的产品配置（默认 CodeBuddy）。 */
   private readonly product: BuddyProduct
-  private readonly fetchImpl: typeof fetch
   /**
    * 前缀缓存会话标识（prompt_cache_key）。同一会话内所有请求复用同一 key，
    * 服务端据此把相同前缀的 KV 缓存跨请求复用；缺失时缓存命中恒为 0。
@@ -571,7 +570,6 @@ export class BuddyAdapter extends LlmAdapter {
     super()
     // 默认 CodeBuddy，保证既有行为完全不变。
     this.product = options.product ?? CODEBUDDY
-    this.fetchImpl = options.fetchImpl ?? fetch
     this.sessionId = options.sessionId ?? crypto.randomUUID().replace(/-/g, '')
     const fallback = this.product.fallbackModels ?? []
     this.productFallbackIndex = new Map(fallback.map((model) => [model.id, model]))
@@ -587,6 +585,18 @@ export class BuddyAdapter extends LlmAdapter {
         this.remoteContextWindows = new Map()
       })
     }
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   /**

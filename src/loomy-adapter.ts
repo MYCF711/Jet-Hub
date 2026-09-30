@@ -146,7 +146,6 @@ export interface LoomyAdapterOptions {
 /** Loomy 模型适配器。chat 端点用 Bearer，业务端点用 token。 */
 export class LoomyAdapter extends LlmAdapter {
   private readonly product: LoomyProduct
-  private readonly fetchImpl: typeof fetch
   /** 兜底模型索引（id → 条目）。 */
   private readonly fallbackIndex: ReadonlyMap<string, LoomyFallbackModel>
   /** 远端模型缓存（含展示名与能力）；未拉取时为 undefined。 */
@@ -155,8 +154,19 @@ export class LoomyAdapter extends LlmAdapter {
   constructor(private readonly options: LoomyAdapterOptions) {
     super()
     this.product = options.product ?? LOOMY
-    this.fetchImpl = options.fetchImpl ?? fetch
     this.fallbackIndex = new Map(this.product.fallbackModels.map((model) => [model.id, model]))
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   /**

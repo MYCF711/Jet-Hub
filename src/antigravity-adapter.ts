@@ -370,7 +370,6 @@ function collectSystem(messages: readonly { role: string; content: unknown }[], 
  */
 export class AntigravityAdapter extends LlmAdapter {
   private readonly gate = new SerialGate()
-  private readonly fetchImpl: typeof fetch
   private readonly readCredential: () => AntigravityCredential | undefined
   private readonly refreshImpl: ((refreshToken: string) => Promise<string>) | undefined
   /** 远端模型缓存（成功拉取一次后填充）。 */
@@ -380,9 +379,20 @@ export class AntigravityAdapter extends LlmAdapter {
 
   constructor(private readonly options: AntigravityAdapterOptions = {}) {
     super()
-    this.fetchImpl = options.fetchImpl ?? fetch
     this.readCredential = options.readCredential ?? readAntigravityCredential
     this.refreshImpl = options.refresh
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   providerInfo(provider: string): LlmProviderInfo {

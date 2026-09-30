@@ -175,7 +175,6 @@ export interface ClineAdapterOptions {
  */
 export class ClineAdapter extends LlmAdapter {
   private readonly product: ClineProduct
-  private readonly fetchImpl: typeof fetch
   /** 远端模型目录缓存（首次成功后填充）。 */
   private remoteModels: ClineModel[] | undefined
   /** 正在进行中的目录加载（避免并发重复请求）。 */
@@ -184,7 +183,18 @@ export class ClineAdapter extends LlmAdapter {
   constructor(private readonly options: ClineAdapterOptions) {
     super()
     this.product = options.product ?? CLINE
-    this.fetchImpl = options.fetchImpl ?? fetch
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   /**

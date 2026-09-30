@@ -341,7 +341,6 @@ export function serializePrompt(options: GenerateOptions): string {
  */
 export class AntigravityLocalAdapter extends LlmAdapter {
   private readonly gate = new SerialGate()
-  private readonly fetchImpl: typeof fetch
   private readonly discover: () => Promise<LanguageServerInstance | undefined>
   private readonly replyTimeoutMs: number
   private readonly pollIntervalMs: number
@@ -359,12 +358,23 @@ export class AntigravityLocalAdapter extends LlmAdapter {
 
   constructor(private readonly options: AntigravityLocalAdapterOptions = {}) {
     super()
-    this.fetchImpl = options.fetchImpl ?? fetch
     this.discover = options.discover ?? (() => discoverLanguageServer({ fetchImpl: this.fetchImpl }))
     this.replyTimeoutMs = options.replyTimeoutMs ?? DEFAULT_REPLY_TIMEOUT_MS
     this.pollIntervalMs = options.pollIntervalMs ?? POLL_INTERVAL_MS
     this.allowPublicFallback = options.allowPublicFallback ?? (options.publicAdapter !== undefined)
     this.publicAdapter = options.publicAdapter
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   providerInfo(provider: string): LlmProviderInfo {

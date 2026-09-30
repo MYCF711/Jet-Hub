@@ -686,7 +686,6 @@ function resolveChunkTimeoutMs(): number {
 /** LobsterAI 模型适配器。使用 Bearer access_token 鉴权，仅支持 SSE。 */
 export class LobsteraiAdapter extends LlmAdapter {
   private readonly product: LobsteraiProduct
-  private readonly fetchImpl: typeof fetch
   /** 动态模型缓存（首次 listModels 成功后填充）。 */
   private remoteModels: LobsteraiRemoteModel[] | undefined
   /** 远端下发的模型元数据（id → 条目），listModels/resolveModel 共用。 */
@@ -697,10 +696,21 @@ export class LobsteraiAdapter extends LlmAdapter {
   constructor(private readonly options: LobsteraiAdapterOptions) {
     super()
     this.product = options.product ?? LOBSTERAI
-    this.fetchImpl = options.fetchImpl ?? fetch
     this.fallbackIndex = new Map(
       (this.product.fallbackModels ?? []).map((model) => [model.id, model]),
     )
+  }
+
+  /**
+   * 注入的 fetch（测试用）；默认为全局 fetch。
+   *
+   * ⚠ 必须是 getter 而非构造期赋值：构造期求值会把 `globalThis.fetch` 冻结成
+   * 当时的引用，使运行时装上的 fetch 补丁（billion-context 上下文压缩代理即靠
+   * 此接管模型流量）对本适配器发出的请求失效 —— 表现为压缩静默不生效。
+   * 与 `src/buddy-auth.ts` 的既有写法保持一致。
+   */
+  private get fetchImpl(): typeof fetch {
+    return this.options.fetchImpl ?? fetch
   }
 
   /**
